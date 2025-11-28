@@ -32,7 +32,13 @@ All parameters are optional. Provide at least `keyword` or `location` for genera
 
 ## Output
 
-The actor outputs a dataset of job listings in JSON format. Each item includes:
+The actor outputs a dataset of job listings in JSON format, accessible via multiple views for different levels of detail:
+
+### Dataset Views
+- **Overview**: A summary table displaying key job information (title, company, location, posting date, URL) for quick browsing.
+- **Full Details**: A comprehensive table including all available fields (title, company, category, location, posting date, HTML description, text description, URL) for in-depth analysis.
+
+Each dataset item follows this structure:
 
 ```json
 {
@@ -55,6 +61,8 @@ The actor outputs a dataset of job listings in JSON format. Each item includes:
 - **description_html**: Full job description in HTML.
 - **description_text**: Plain text version of the description.
 - **url**: Direct link to the job listing on Finn.no.
+
+Use the dataset views in the Apify platform to switch between summary and detailed displays.
 
 ## Usage
 
