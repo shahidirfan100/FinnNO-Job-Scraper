@@ -8,10 +8,10 @@
         "fields": [
           "title",
           "company",
-          "category",
           "location",
+          "salary",
+          "job_type",
           "date_posted",
-          "description_text",
           "url"
         ]
       },
@@ -26,20 +26,20 @@
             "label": "Company",
             "format": "text"
           },
-          "category": {
-            "label": "Category",
-            "format": "text"
-          },
           "location": {
             "label": "Location",
             "format": "text"
           },
-          "date_posted": {
-            "label": "Posted",
+          "salary": {
+            "label": "Salary",
             "format": "text"
           },
-          "description_text": {
-            "label": "Description",
+          "job_type": {
+            "label": "Job Type",
+            "format": "text"
+          },
+          "date_posted": {
+            "label": "Posted",
             "format": "text"
           },
           "url": {

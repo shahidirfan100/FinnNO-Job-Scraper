@@ -1,9 +1,9 @@
-// Finn.no jobs scraper - CheerioCrawler implementation (with sector/industry/etc)
+// Finn.no jobs scraper - CheerioCrawler implementation (single job pages fixed)
 import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 
-// Single-entrypoint main
+// Initialize Actor
 await Actor.init();
 
 async function main() {
@@ -12,7 +12,7 @@ async function main() {
         const {
             keyword = '',
             location = '',
-            // category is no longer used in output, but we still accept it in input for compatibility
+            // category accepted for backwards compatibility, but not used in output
             category: INPUT_CATEGORY, // eslint-disable-line no-unused-vars
             results_wanted: RESULTS_WANTED_RAW = 100,
             max_pages: MAX_PAGES_RAW = 999,
@@ -26,6 +26,7 @@ async function main() {
             dedupe = true,
         } = input;
 
+        // Normalize numeric inputs
         const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW)
             ? Math.max(1, +RESULTS_WANTED_RAW)
             : Number.MAX_SAFE_INTEGER;
@@ -34,6 +35,7 @@ async function main() {
             ? Math.max(1, +MAX_PAGES_RAW)
             : 999;
 
+        // Helpers
         const toAbs = (href, base = 'https://www.finn.no') => {
             try {
                 return new URL(href, base).href;
@@ -45,7 +47,7 @@ async function main() {
         const cleanText = (htmlOrText) => {
             if (!htmlOrText) return '';
             const $ = cheerioLoad(String(htmlOrText));
-            $('script, style, noscript, iframe').remove();
+            $('script, style, noscript, iframe, template').remove();
             return $.root().text().replace(/\s+/g, ' ').trim();
         };
 
@@ -56,6 +58,7 @@ async function main() {
             return u.href;
         };
 
+        // Build initial URLs
         const initial = [];
         if (Array.isArray(startUrls) && startUrls.length) initial.push(...startUrls);
         if (startUrl) initial.push(startUrl);
@@ -70,9 +73,10 @@ async function main() {
         const seenListUrls = new Set();
         const seenDetailUrls = new Set();
 
-        // LIST → DETAIL: carry basic metadata (company, location, date_posted)
+        // LIST → DETAIL: keep metadata for fallback (company, location, date_posted)
         const detailMeta = new Map(); // key: normalized URL, value: { title, company, location, date_posted }
 
+        // Cookie handling
         const cookieHeaderFromJson = (() => {
             if (!cookiesJson) return null;
             try {
@@ -90,9 +94,9 @@ async function main() {
             }
             return null;
         })();
-
         const cookieHeader = cookies || cookieHeaderFromJson || null;
 
+        // Normalize job object from JSON APIs (if any)
         const normalizeJob = (job) => ({
             url:
                 job?.canonical_url ||
@@ -104,6 +108,7 @@ async function main() {
             date_posted: job?.published || job?.datePosted || null,
         });
 
+        // Extract jobs from LIST (search results) HTML
         function extractJobsFromHtml($) {
             const jobs = [];
             $('a.sf-search-ad-link, a[href*="/job/ad/"]').each((_, link) => {
@@ -174,6 +179,7 @@ async function main() {
             return jobs;
         }
 
+        // Try extracting job details from custom "jobAd" JSON blob in scripts
         function extractJobDetailsFromJson($) {
             let job = null;
             $('script').each((_, script) => {
@@ -201,7 +207,6 @@ async function main() {
                     job.location?.streetAddress ||
                     job.location?.city ||
                     null,
-                // if Finn ever exposes these, we map:
                 sector: job.sector || null,
                 industry: job.industry || null,
                 job_function: job.occupation || job.jobFunction || null,
@@ -209,6 +214,7 @@ async function main() {
             };
         }
 
+        // Try extracting from JSON-LD JobPosting
         function extractFromJsonLd($) {
             const scripts = $('script[type="application/ld+json"]');
             const candidates = [];
@@ -263,22 +269,49 @@ async function main() {
                 date_posted: e.datePosted || e.datePublished || null,
                 description_html: e.description || null,
                 location: jobLocation,
-                sector: e.industry || null, // best-effort mapping
+                sector: e.industry || null, // best-effort
                 industry: e.industry || null,
                 job_function: e.occupationalCategory || null,
                 employment_type: e.employmentType || null,
             };
         }
 
-        // Extract a field from raw text, supporting multiple label variants
-        function extractField(bodyText, labels) {
-            if (!bodyText) return null;
-            for (const label of labels) {
-                const re = new RegExp(`${label}\\s*:\\s*([^\\n#]+)`, 'i');
-                const m = bodyText.match(re);
-                if (m && m[1]) return m[1].trim();
-            }
-            return null;
+        // Extract <li><span class="font-bold">Label:</span> Value...</li> style fields inside a section
+        function extractLabeledValue($, section, labelText) {
+            if (!section || !section.length) return null;
+            let value = null;
+            section.find('li').each((_, li) => {
+                if (value) return;
+                const $li = $(li);
+                const bold = $li.find('span.font-bold').first();
+                if (!bold.length) return;
+                const label = bold.text().replace(/[:\s]+$/, '').trim().toLowerCase();
+                if (label === labelText.toLowerCase()) {
+                    const clone = $li.clone();
+                    clone.find('span.font-bold').remove();
+                    value = clone.text().replace(/\s+/g, ' ').trim();
+                }
+            });
+            return value;
+        }
+
+        // Extract deadline & employment type ("Frist", "Ansettelsesform") from top metadata list
+        function extractTopMeta($) {
+            let deadline = null;
+            let employmentType = null;
+
+            $('ul li').each((_, li) => {
+                if (deadline && employmentType) return;
+                const text = $(li).text().replace(/\s+/g, ' ').trim();
+                if (!deadline && text.startsWith('Frist')) {
+                    deadline = text.replace(/^Frist\s*/i, '').trim();
+                }
+                if (!employmentType && text.startsWith('Ansettelsesform')) {
+                    employmentType = text.replace(/^Ansettelsesform\s*/i, '').trim();
+                }
+            });
+
+            return { deadline, employmentType };
         }
 
         const crawler = new CheerioCrawler({
@@ -296,7 +329,17 @@ async function main() {
                 },
             ],
             async requestHandler({ request, response, $, log: crawlerLog }) {
-                const label = request.userData?.label || 'LIST';
+                // Determine label (LIST vs DETAIL), but auto-detect job/ad URLs
+                let label = request.userData?.label || 'LIST';
+                try {
+                    const path = new URL(request.loadedUrl || request.url).pathname;
+                    if (/\/job\/ad\//.test(path)) {
+                        label = 'DETAIL'; // Single job pages
+                    }
+                } catch {
+                    // ignore
+                }
+
                 const pageNo = request.userData?.pageNo || 1;
 
                 if (!response) {
@@ -306,12 +349,13 @@ async function main() {
 
                 let jobs = [];
 
-                // JSON API responses
+                // JSON API (if any)
                 if (response.headers['content-type']?.includes('json')) {
                     try {
-                        const data = typeof response.body === 'string'
-                            ? JSON.parse(response.body)
-                            : response.body;
+                        const data =
+                            typeof response.body === 'string'
+                                ? JSON.parse(response.body)
+                                : response.body;
                         const rawJobs = Array.isArray(data) ? data : data.jobs || [];
                         jobs = rawJobs.map(normalizeJob);
                     } catch (e) {
@@ -319,9 +363,11 @@ async function main() {
                         return;
                     }
                 } else if ($ && label === 'LIST') {
+                    // LIST HTML page
                     jobs = extractJobsFromHtml($);
                 }
 
+                // -------- LIST PAGES --------
                 if (label === 'LIST') {
                     if (saved >= RESULTS_WANTED) return;
 
@@ -366,7 +412,7 @@ async function main() {
                                 toPush.map((j) => ({
                                     title: j.title || null,
                                     company: j.company || null,
-                                    // no category anymore
+                                    // No category in output
                                     location: j.location || null,
                                     date_posted: j.date_posted || null,
                                     url: j.url,
@@ -377,6 +423,7 @@ async function main() {
                         }
                     }
 
+                    // Pagination
                     if (saved < RESULTS_WANTED && pageNo < MAX_PAGES && $) {
                         const nextPageNo = pageNo + 1;
                         let nextUrl = null;
@@ -401,7 +448,7 @@ async function main() {
                     return;
                 }
 
-                // DETAIL pages
+                // -------- DETAIL PAGES (single job) --------
                 if (label === 'DETAIL') {
                     if (saved >= RESULTS_WANTED) return;
                     if (!$) {
@@ -416,22 +463,37 @@ async function main() {
 
                         const fromList = detailMeta.get(key) || {};
 
+                        // Structured data first
                         const json = extractJobDetailsFromJson($) || extractFromJsonLd($) || {};
                         const data = { ...json };
 
-                        // Basic text for regex-based extraction
+                        // Full HTML text (for date fallbacks only)
                         const fullHtml = $.root().html() || '';
                         const bodyText = cleanText(fullHtml);
 
-                        // Title
+                        // --- TITLE ---
                         if (!data.title) {
-                            data.title =
-                                $('h1').first().text().trim() ||
-                                fromList.title ||
+                            // Prefer H2.t2 (actual job title)
+                            let title =
+                                $('section h2.t2')
+                                    .first()
+                                    .text()
+                                    .trim() ||
+                                $('h2.t2')
+                                    .first()
+                                    .text()
+                                    .trim() ||
                                 null;
+
+                            if (!title) {
+                                // Fallback: first H1
+                                title = $('h1').first().text().trim() || null;
+                            }
+                            if (!title && fromList.title) title = fromList.title;
+                            data.title = title || null;
                         }
 
-                        // Company
+                        // --- COMPANY ---
                         if (!data.company) {
                             data.company =
                                 $('[data-automation-id*="employer"], [data-testid*="employer"]')
@@ -446,72 +508,106 @@ async function main() {
                                 null;
                         }
 
-                        // Description (HTML + text)
+                        // --- DESCRIPTION_HTML (only job description, not whole page) ---
                         if (!data.description_html) {
-                            let descEl =
-                                $('[data-automation-id*="ad-body"], [data-testid*="ad-body"]').first();
-                            if (!descEl.length) descEl = $('[data-automation-id="job-description"]').first();
-                            if (!descEl.length) descEl = $('main').first();
-                            if (!descEl.length) descEl = $('article').first();
-                            if (!descEl.length) descEl = $('body').first();
+                            // 1) First .import-decoration is usually the main job description
+                            let descEl = $('.import-decoration').first();
+
+                            // 2) Older layouts / alternate selectors
+                            if (!descEl.length) {
+                                descEl = $(
+                                    '[data-testid="ad-description"], [data-automation-id="job-description"]',
+                                ).first();
+                            }
 
                             if (descEl && descEl.length) {
-                                data.description_html = String(descEl.html() || '').trim() || null;
+                                const clone = descEl.clone();
+                                clone.find('script, style, template, iframe, svg').remove();
+
+                                let html = clone.html() || '';
+
+                                // Strip noisy attributes (optional but makes HTML cleaner)
+                                html = html.replace(/\sdata-[a-zA-Z0-9-]+="[^"]*"/g, '');
+                                html = html.replace(/\s(?:class|id|style)="[^"]*"/g, '');
+                                html = html.trim();
+
+                                data.description_html = html.length ? html : null;
                             }
                         }
+
+                        // --- DESCRIPTION_TEXT ---
                         data.description_text = data.description_html
                             ? cleanText(data.description_html)
                             : null;
 
-                        // Location
+                        // --- LOCATION ---
                         if (!data.location) {
+                            // Try within "Om arbeidsgiveren" section
+                            const employerSection = $('h2:contains("Om arbeidsgiveren")').closest(
+                                'section',
+                            );
+                            const locFromSection = extractLabeledValue(
+                                $,
+                                employerSection,
+                                'Sted',
+                            );
                             const locFromDom =
                                 $('[data-automation-id="job-location"], [class*="location"], .location')
                                     .first()
                                     .text()
                                     .trim() || null;
-                            const locFromText = extractField(bodyText, ['Sted', 'Location']);
+
                             data.location =
+                                locFromSection ||
                                 locFromDom ||
-                                locFromText ||
                                 fromList.location ||
                                 null;
                         }
 
-                        // Date posted
+                        // --- DATE_POSTED (best effort) ---
                         if (!data.date_posted) {
                             if (fromList.date_posted) {
                                 data.date_posted = fromList.date_posted;
                             } else {
-                                const frist = bodyText.match(/Frist\s+([0-9.\- ]{8,})/i);
                                 const sistEndret = bodyText.match(
                                     /Sist endret\s+([0-9.\-,: ]{8,})/i,
                                 );
-                                if (frist && frist[1]) data.date_posted = frist[1].trim();
-                                else if (sistEndret && sistEndret[1]) {
+                                if (sistEndret && sistEndret[1]) {
                                     data.date_posted = sistEndret[1].trim();
                                 }
                             }
                         }
 
-                        // New fields: sector, industry, job_function, employment_type
+                        // --- TOP META: deadline & employment type ---
+                        const { employmentType } = extractTopMeta($);
+
+                        // --- SECTOR / INDUSTRY / JOB_FUNCTION / EMPLOYMENT_TYPE ---
+                        const employerSection = $('h2:contains("Om arbeidsgiveren")').closest(
+                            'section',
+                        );
+
                         const sector =
                             data.sector ||
-                            extractField(bodyText, ['Sektor', 'Sector']) ||
-                            null;
-                        const industry =
-                            data.industry ||
-                            extractField(bodyText, ['Bransje', 'Industry']) ||
-                            null;
-                        const jobFunction =
-                            data.job_function ||
-                            extractField(bodyText, ['Stillingsfunksjon', 'Job function']) ||
-                            null;
-                        const employmentType =
-                            data.employment_type ||
-                            extractField(bodyText, ['Ansettelsesform', 'Employment type']) ||
+                            extractLabeledValue($, employerSection, 'Sektor') ||
                             null;
 
+                        const industry =
+                            data.industry ||
+                            extractLabeledValue($, employerSection, 'Bransje') ||
+                            null;
+
+                        const jobFunction =
+                            data.job_function ||
+                            extractLabeledValue($, employerSection, 'Stillingsfunksjon') ||
+                            null;
+
+                        const employment_type =
+                            data.employment_type ||
+                            employmentType ||
+                            extractLabeledValue($, employerSection, 'Ansettelsesform') ||
+                            null;
+
+                        // Final item
                         const item = {
                             title: data.title || null,
                             company: data.company || null,
@@ -519,7 +615,7 @@ async function main() {
                             location: data.location || null,
                             industry,
                             job_function: jobFunction,
-                            employment_type: employmentType,
+                            employment_type,
                             date_posted: data.date_posted || null,
                             description_html: data.description_html || null,
                             description_text: data.description_text || null,
@@ -530,9 +626,9 @@ async function main() {
                         await Dataset.pushData(item);
                         saved++;
 
-                        if (!item.description_html || !item.company) {
+                        if (!item.title || !item.company || !item.description_html) {
                             crawlerLog.debug(
-                                `DETAIL missing fields for ${key} (company: ${!!item.company}, description_html: ${!!item.description_html})`,
+                                `DETAIL missing fields for ${key} (title: ${!!item.title}, company: ${!!item.company}, description_html: ${!!item.description_html})`,
                             );
                         }
                     } catch (err) {
