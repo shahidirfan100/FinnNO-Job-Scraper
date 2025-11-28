@@ -1,4 +1,4 @@
-// Finn.no jobs scraper - CheerioCrawler implementation (improved)
+// Finn.no jobs scraper - CheerioCrawler implementation (with sector/industry/etc)
 import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
@@ -12,7 +12,8 @@ async function main() {
         const {
             keyword = '',
             location = '',
-            category: INPUT_CATEGORY = '',
+            // category is no longer used in output, but we still accept it in input for compatibility
+            category: INPUT_CATEGORY, // eslint-disable-line no-unused-vars
             results_wanted: RESULTS_WANTED_RAW = 100,
             max_pages: MAX_PAGES_RAW = 999,
             collectDetails = true,
@@ -52,7 +53,6 @@ async function main() {
             const u = new URL('https://www.finn.no/job/search');
             if (kw) u.searchParams.set('q', String(kw).trim());
             if (loc) u.searchParams.set('location', String(loc).trim());
-            // category not directly supported in URL; kept for future mapping
             return u.href;
         };
 
@@ -60,7 +60,7 @@ async function main() {
         if (Array.isArray(startUrls) && startUrls.length) initial.push(...startUrls);
         if (startUrl) initial.push(startUrl);
         if (url) initial.push(url);
-        if (!initial.length) initial.push(buildStartUrl(keyword, location, INPUT_CATEGORY));
+        if (!initial.length) initial.push(buildStartUrl(keyword, location));
 
         const proxyConf = proxyConfiguration
             ? await Actor.createProxyConfiguration({ ...proxyConfiguration })
@@ -70,8 +70,8 @@ async function main() {
         const seenListUrls = new Set();
         const seenDetailUrls = new Set();
 
-        // LIST → DETAIL metadata map
-        const detailMeta = new Map(); // key: normalized URL (without query), value: { url, title, company, location, date_posted }
+        // LIST → DETAIL: carry basic metadata (company, location, date_posted)
+        const detailMeta = new Map(); // key: normalized URL, value: { title, company, location, date_posted }
 
         const cookieHeaderFromJson = (() => {
             if (!cookiesJson) return null;
@@ -106,7 +106,6 @@ async function main() {
 
         function extractJobsFromHtml($) {
             const jobs = [];
-            // Main job cards
             $('a.sf-search-ad-link, a[href*="/job/ad/"]').each((_, link) => {
                 const href = $(link).attr('href');
                 const urlAbs = toAbs(href);
@@ -114,9 +113,8 @@ async function main() {
 
                 const article = $(link).closest('article');
                 const title =
-                    ($(link).text() ||
-                        article.find('h1,h2,h3').first().text() ||
-                        '')?.trim() || null;
+                    ($(link).text() || article.find('h1,h2,h3').first().text() || '').trim() ||
+                    null;
 
                 const metaText = (article
                     .find('.text-xs, time, .sf-search-ad__meta')
@@ -177,33 +175,38 @@ async function main() {
         }
 
         function extractJobDetailsFromJson($) {
-            // Some FINN pages expose a jobAd JSON blob in a <script>
             let job = null;
             $('script').each((_, script) => {
                 const content = $(script).html() || '';
-                const match = content.match(/"jobAd"\s*:\s*(\{.*?\})/s) || content.match(/jobAd\s*[:=]\s*(\{.*?\})/s);
+                const match =
+                    content.match(/"jobAd"\s*:\s*(\{.*?\})/s) ||
+                    content.match(/jobAd\s*[:=]\s*(\{.*?\})/s);
                 if (match) {
                     try {
                         job = JSON.parse(match[1]);
                     } catch {
-                        // ignore parsing errors; we'll fall back to other strategies
+                        // ignore
                     }
                 }
             });
-            if (job) {
-                return {
-                    title: job.heading || job.jobTitle,
-                    company: job.company?.name || job.employer || null,
-                    date_posted: job.published || job.datePosted || null,
-                    description_html: job.description || job.body || null,
-                    location:
-                        job.location?.postalName ||
-                        job.location?.streetAddress ||
-                        job.location?.city ||
-                        null,
-                };
-            }
-            return null;
+            if (!job) return null;
+
+            return {
+                title: job.heading || job.jobTitle,
+                company: job.company?.name || job.employer || null,
+                date_posted: job.published || job.datePosted || null,
+                description_html: job.description || job.body || null,
+                location:
+                    job.location?.postalName ||
+                    job.location?.streetAddress ||
+                    job.location?.city ||
+                    null,
+                // if Finn ever exposes these, we map:
+                sector: job.sector || null,
+                industry: job.industry || null,
+                job_function: job.occupation || job.jobFunction || null,
+                employment_type: job.engagementType || job.employment_type || null,
+            };
         }
 
         function extractFromJsonLd($) {
@@ -212,19 +215,8 @@ async function main() {
 
             const collect = (obj) => {
                 if (!obj) return;
-                if (Array.isArray(obj)) {
-                    obj.forEach(collect);
-                    return;
-                }
-                if (obj['script:ld+json']) {
-                    collect(obj['script:ld+json']);
-                }
-                if (obj.jobPosting) {
-                    collect(obj.jobPosting);
-                }
-                if (obj['@graph']) {
-                    collect(obj['@graph']);
-                }
+                if (Array.isArray(obj)) return obj.forEach(collect);
+                if (obj['@graph']) return collect(obj['@graph']);
                 const t = obj['@type'] || obj.type;
                 if (t === 'JobPosting' || (Array.isArray(t) && t.includes('JobPosting'))) {
                     candidates.push(obj);
@@ -236,12 +228,13 @@ async function main() {
                     const parsed = JSON.parse($(scripts[i]).html() || '');
                     collect(parsed);
                 } catch {
-                    // ignore parsing errors; move on
+                    // ignore
                 }
             }
 
             if (!candidates.length) return null;
             const e = candidates[0];
+
             const hiringOrg =
                 (e.hiringOrganization && e.hiringOrganization.name) ||
                 e.hiringOrganization ||
@@ -270,7 +263,22 @@ async function main() {
                 date_posted: e.datePosted || e.datePublished || null,
                 description_html: e.description || null,
                 location: jobLocation,
+                sector: e.industry || null, // best-effort mapping
+                industry: e.industry || null,
+                job_function: e.occupationalCategory || null,
+                employment_type: e.employmentType || null,
             };
+        }
+
+        // Extract a field from raw text, supporting multiple label variants
+        function extractField(bodyText, labels) {
+            if (!bodyText) return null;
+            for (const label of labels) {
+                const re = new RegExp(`${label}\\s*:\\s*([^\\n#]+)`, 'i');
+                const m = bodyText.match(re);
+                if (m && m[1]) return m[1].trim();
+            }
+            return null;
         }
 
         const crawler = new CheerioCrawler({
@@ -296,11 +304,6 @@ async function main() {
                     return;
                 }
 
-                // If we've already satisfied the quota, skip extra work
-                if (saved >= RESULTS_WANTED && label === 'LIST') {
-                    return;
-                }
-
                 let jobs = [];
 
                 // JSON API responses
@@ -315,14 +318,13 @@ async function main() {
                         crawlerLog.error(`Failed to parse JSON: ${e.message}`);
                         return;
                     }
-                } else if ($) {
-                    // HTML pages
-                    if (label === 'LIST') {
-                        jobs = extractJobsFromHtml($);
-                    }
+                } else if ($ && label === 'LIST') {
+                    jobs = extractJobsFromHtml($);
                 }
 
                 if (label === 'LIST') {
+                    if (saved >= RESULTS_WANTED) return;
+
                     const remaining = RESULTS_WANTED - saved;
 
                     const uniqueJobs = jobs.filter((j) => {
@@ -330,7 +332,7 @@ async function main() {
                         const key = j.url.split('?')[0];
                         if (dedupe && seenListUrls.has(key)) return false;
                         if (dedupe) seenListUrls.add(key);
-                        // store metadata for DETAIL fallback
+
                         detailMeta.set(key, {
                             url: key,
                             title: j.title || null,
@@ -348,23 +350,28 @@ async function main() {
                     if (collectDetails) {
                         const toEnqueue = uniqueJobs.slice(0, Math.max(0, remaining));
                         if (toEnqueue.length) {
-                            // Enqueue detail pages (metadata kept in global map)
                             await Promise.all(
-                                toEnqueue.map((job) => {
-                                    const urlAbs = job.url;
-                                    if (!urlAbs) return null;
-                                    return crawler.requestQueue?.addRequest({
-                                        url: urlAbs,
+                                toEnqueue.map((job) =>
+                                    crawler.requestQueue?.addRequest({
+                                        url: job.url,
                                         userData: { label: 'DETAIL' },
-                                    });
-                                }),
+                                    }),
+                                ),
                             );
                         }
                     } else {
                         const toPush = uniqueJobs.slice(0, Math.max(0, remaining));
                         if (toPush.length) {
                             await Dataset.pushData(
-                                toPush.map((j) => ({ ...j, _source: 'finn.no' })),
+                                toPush.map((j) => ({
+                                    title: j.title || null,
+                                    company: j.company || null,
+                                    // no category anymore
+                                    location: j.location || null,
+                                    date_posted: j.date_posted || null,
+                                    url: j.url,
+                                    _source: 'finn.no',
+                                })),
                             );
                             saved += toPush.length;
                         }
@@ -409,9 +416,12 @@ async function main() {
 
                         const fromList = detailMeta.get(key) || {};
 
-                        // Structured data first
                         const json = extractJobDetailsFromJson($) || extractFromJsonLd($) || {};
                         const data = { ...json };
+
+                        // Basic text for regex-based extraction
+                        const fullHtml = $.root().html() || '';
+                        const bodyText = cleanText(fullHtml);
 
                         // Title
                         if (!data.title) {
@@ -421,115 +431,95 @@ async function main() {
                                 null;
                         }
 
-                        // Company – selectors → "Om arbeidsgiveren" → list-data
+                        // Company
                         if (!data.company) {
                             data.company =
                                 $('[data-automation-id*="employer"], [data-testid*="employer"]')
                                     .first()
                                     .text()
                                     .trim() ||
-                                $('[class*="company"], .company, .employer').first().text().trim() ||
+                                $('[class*="company"], .company, .employer')
+                                    .first()
+                                    .text()
+                                    .trim() ||
+                                fromList.company ||
                                 null;
                         }
 
-                        const bodyText = cleanText($.root().html());
-
-                        if (!data.company && bodyText.includes('Om arbeidsgiveren')) {
-                            // Infer from "Om arbeidsgiveren <Employer> søker ..."
-                            const m = bodyText.match(
-                                /Om arbeidsgiveren\s+([^#\n]+?)(?:\s+søker|\s+rekrutterer|\s+er\s)/i,
-                            );
-                            if (m) {
-                                data.company = m[1].trim();
-                            }
-                        }
-
-                        if (!data.company && fromList.company) {
-                            data.company = fromList.company;
-                        }
-
-                        // Description HTML / text
+                        // Description (HTML + text)
                         if (!data.description_html) {
                             let descEl =
                                 $('[data-automation-id*="ad-body"], [data-testid*="ad-body"]').first();
-
-                            if (!descEl.length) {
-                                descEl = $('main').first();
-                            }
-                            if (!descEl.length) {
-                                descEl = $('article').first();
-                            }
-                            if (!descEl.length) {
-                                descEl = $('body').first();
-                            }
+                            if (!descEl.length) descEl = $('[data-automation-id="job-description"]').first();
+                            if (!descEl.length) descEl = $('main').first();
+                            if (!descEl.length) descEl = $('article').first();
+                            if (!descEl.length) descEl = $('body').first();
 
                             if (descEl && descEl.length) {
                                 data.description_html = String(descEl.html() || '').trim() || null;
                             }
                         }
-
                         data.description_text = data.description_html
                             ? cleanText(data.description_html)
                             : null;
 
-                        // Location – JSON → selectors → list
+                        // Location
                         if (!data.location) {
-                            data.location =
+                            const locFromDom =
                                 $('[data-automation-id="job-location"], [class*="location"], .location')
                                     .first()
                                     .text()
                                     .trim() || null;
-                        }
-                        if (!data.location && fromList.location) {
-                            data.location = fromList.location;
+                            const locFromText = extractField(bodyText, ['Sted', 'Location']);
+                            data.location =
+                                locFromDom ||
+                                locFromText ||
+                                fromList.location ||
+                                null;
                         }
 
-                        // Date posted – JSON → list → textual patterns
+                        // Date posted
                         if (!data.date_posted) {
                             if (fromList.date_posted) {
                                 data.date_posted = fromList.date_posted;
                             } else {
-                                const deadlineMatch = bodyText.match(/Frist\s+([0-9.\- ]{8,})/i);
-                                const changedMatch = bodyText.match(
+                                const frist = bodyText.match(/Frist\s+([0-9.\- ]{8,})/i);
+                                const sistEndret = bodyText.match(
                                     /Sist endret\s+([0-9.\-,: ]{8,})/i,
                                 );
-                                if (deadlineMatch) {
-                                    data.date_posted = deadlineMatch[1].trim();
-                                } else if (changedMatch) {
-                                    data.date_posted = changedMatch[1].trim();
+                                if (frist && frist[1]) data.date_posted = frist[1].trim();
+                                else if (sistEndret && sistEndret[1]) {
+                                    data.date_posted = sistEndret[1].trim();
                                 }
                             }
                         }
 
-                        // Category – try to derive from "Bransje" + "Stillingsfunksjon"
-                        let derivedCategory = null;
-                        if (bodyText) {
-                            let bransje = null;
-                            let stilling = null;
-
-                            const bransjeMatch = bodyText.match(/Bransje:\s*([^\n#]+)/i);
-                            if (bransjeMatch) {
-                                bransje = bransjeMatch[1].trim();
-                            }
-                            const stillingMatch = bodyText.match(/Stillingsfunksjon:\s*([^\n#]+)/i);
-                            if (stillingMatch) {
-                                stilling = stillingMatch[1].trim();
-                            }
-
-                            if (bransje || stilling) {
-                                derivedCategory = [bransje, stilling]
-                                    .filter(Boolean)
-                                    .join(' | ');
-                            }
-                        }
-
-                        const finalCategory = derivedCategory || INPUT_CATEGORY || null;
+                        // New fields: sector, industry, job_function, employment_type
+                        const sector =
+                            data.sector ||
+                            extractField(bodyText, ['Sektor', 'Sector']) ||
+                            null;
+                        const industry =
+                            data.industry ||
+                            extractField(bodyText, ['Bransje', 'Industry']) ||
+                            null;
+                        const jobFunction =
+                            data.job_function ||
+                            extractField(bodyText, ['Stillingsfunksjon', 'Job function']) ||
+                            null;
+                        const employmentType =
+                            data.employment_type ||
+                            extractField(bodyText, ['Ansettelsesform', 'Employment type']) ||
+                            null;
 
                         const item = {
                             title: data.title || null,
                             company: data.company || null,
-                            category: finalCategory,
+                            sector,
                             location: data.location || null,
+                            industry,
+                            job_function: jobFunction,
+                            employment_type: employmentType,
                             date_posted: data.date_posted || null,
                             description_html: data.description_html || null,
                             description_text: data.description_text || null,
@@ -540,9 +530,9 @@ async function main() {
                         await Dataset.pushData(item);
                         saved++;
 
-                        if (!item.description_html || !item.company || !item.date_posted) {
+                        if (!item.description_html || !item.company) {
                             crawlerLog.debug(
-                                `DETAIL missing fields for ${key} (company: ${!!item.company}, date_posted: ${!!item.date_posted}, description_html: ${!!item.description_html})`,
+                                `DETAIL missing fields for ${key} (company: ${!!item.company}, description_html: ${!!item.description_html})`,
                             );
                         }
                     } catch (err) {
