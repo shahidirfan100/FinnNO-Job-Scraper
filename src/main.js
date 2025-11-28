@@ -143,26 +143,34 @@ async function main() {
 
         function extractFromJsonLd($) {
             const scripts = $('script[type="application/ld+json"]');
+            const candidates = [];
+
+            const collect = (obj) => {
+                if (!obj) return;
+                if (Array.isArray(obj)) { obj.forEach(collect); return; }
+                if (obj['script:ld+json']) { collect(obj['script:ld+json']); }
+                if (obj.jobPosting) { collect(obj.jobPosting); }
+                if (obj['@graph']) { collect(obj['@graph']); }
+                const t = obj['@type'] || obj.type;
+                if (t === 'JobPosting' || (Array.isArray(t) && t.includes('JobPosting'))) candidates.push(obj);
+            };
+
             for (let i = 0; i < scripts.length; i++) {
                 try {
                     const parsed = JSON.parse($(scripts[i]).html() || '');
-                    const arr = Array.isArray(parsed) ? parsed : [parsed];
-                    for (const e of arr) {
-                        if (!e) continue;
-                        const t = e['@type'] || e.type;
-                        if (t === 'JobPosting' || (Array.isArray(t) && t.includes('JobPosting'))) {
-                            return {
-                                title: e.title || e.name || null,
-                                company: e.hiringOrganization?.name || null,
-                                date_posted: e.datePosted || null,
-                                description_html: e.description || null,
-                                location: (e.jobLocation && e.jobLocation.address && (e.jobLocation.address.addressLocality || e.jobLocation.address.addressRegion)) || null,
-                            };
-                        }
-                    }
+                    collect(parsed);
                 } catch (e) { /* ignore parsing errors */ }
             }
-            return null;
+
+            if (!candidates.length) return null;
+            const e = candidates[0];
+            return {
+                title: e.title || e.name || null,
+                company: e.hiringOrganization?.name || e.hiringOrganization || null,
+                date_posted: e.datePosted || e.datePublished || null,
+                description_html: e.description || null,
+                location: (e.jobLocation && e.jobLocation.address && (e.jobLocation.address.addressLocality || e.jobLocation.address.addressRegion || e.jobLocation.address.addressCountry)) || e.jobLocation?.addressLocality || null,
+            };
         }
 
         const crawler = new CheerioCrawler({
@@ -250,13 +258,14 @@ async function main() {
                         const json = extractJobDetailsFromJson($) || extractFromJsonLd($);
                         const data = json || {};
                         if (!data.title) data.title = $('h1').first().text().trim() || null;
-                        if (!data.company) data.company = $('[class*="company"], .company, .employer, [itemprop="hiringOrganization"]').first().text().trim() || null;
+                        if (!data.company) data.company = $('[class*="company"], .company, .employer, [itemprop="hiringOrganization"]').first().text().trim() || $('p').filter((_, el) => $(el).text().trim()).first().text().trim() || null;
                         if (!data.description_html) {
-                            const desc = $('[class*="job-description"], .job-description, .description, .entry-content, [data-automation-id="job-description"]').first();
+                            const desc = $('[class*="job-description"], .job-description, .description, .entry-content, [data-automation-id="job-description"], .import-decoration').first();
                             data.description_html = desc && desc.length ? String(desc.html()).trim() : null;
                         }
                         data.description_text = data.description_html ? cleanText(data.description_html) : null;
                         if (!data.location) data.location = $('[data-automation-id="job-location"], [class*="location"], .location').first().text().trim() || null;
+                        if (!data.date_posted) data.date_posted = $('time').first().attr('datetime') || $('time').first().text().trim() || null;
 
                         const item = {
                             title: data.title || null,
