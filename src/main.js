@@ -46,7 +46,8 @@ async function main() {
         const proxyConf = proxyConfiguration ? await Actor.createProxyConfiguration({ ...proxyConfiguration }) : undefined;
 
         let saved = 0;
-        const seenUrls = new Set();
+        const seenListUrls = new Set();
+        const seenDetailUrls = new Set();
 
         const cookieHeaderFromJson = (() => {
             if (!cookiesJson) return null;
@@ -199,8 +200,8 @@ async function main() {
                     const uniqueJobs = jobs.filter(j => {
                         if (!j.url) return false;
                         const key = j.url.split('?')[0];
-                        if (dedupe && seenUrls.has(key)) return false;
-                        if (dedupe) seenUrls.add(key);
+                        if (dedupe && seenListUrls.has(key)) return false;
+                        if (dedupe) seenListUrls.add(key);
                         return true;
                     });
 
@@ -243,8 +244,8 @@ async function main() {
                     if (saved >= RESULTS_WANTED) return;
                     try {
                         const key = request.url.split('?')[0];
-                        if (dedupe && seenUrls.has(key)) return;
-                        if (dedupe) seenUrls.add(key);
+                        if (dedupe && seenDetailUrls.has(key)) return;
+                        if (dedupe) seenDetailUrls.add(key);
 
                         const json = extractJobDetailsFromJson($) || extractFromJsonLd($);
                         const data = json || {};

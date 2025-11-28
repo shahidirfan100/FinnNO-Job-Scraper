@@ -23,12 +23,6 @@
       "description": "Location, e.g., 'Oslo', 'Bergen'.",
       "editor": "textfield"
     },
-    "category": {
-      "title": "Category (optional)",
-      "type": "string",
-      "description": "Optional job category (not directly supported on Finn.no).",
-      "editor": "textfield"
-    },
     "collectDetails": {
       "title": "Collect job details",
       "type": "boolean",
