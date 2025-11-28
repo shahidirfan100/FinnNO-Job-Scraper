@@ -1,50 +1,132 @@
-# Finn.no Jobs Scraper
+# Finn.no Job Scraper
 
-This Apify actor scrapes job listings from Finn.no using Crawlee's CheerioCrawler and gotScraping.
+Scrape job listings from Finn.no, Norway's leading classifieds site, to gather comprehensive job data including titles, companies, locations, and descriptions. This actor efficiently extracts jobs from Finn.no's search results and detail pages, making it ideal for job market analysis, recruitment, and data aggregation in the Norwegian job sector.
 
 ## Features
 
-- Scrapes Finn.no search results (`/job/search`) and job detail pages without a browser.
-- Parses list cards directly (class `sf-search-ad-link`), with JSON/JSON-LD fallbacks on detail pages.
-- Handles pagination by iterating `?page=N` until the requested number of results is reached or `max_pages` is hit.
-- Optional detail scraping mode to fetch full job descriptions; list-only mode for speed.
-- In-memory URL deduplication to avoid duplicate dataset items across list/detail pages.
-- Saves results to an Apify dataset using a consistent schema.
+- **Comprehensive Job Extraction**: Collects detailed job information from Finn.no's job listings, including titles, companies, locations, posting dates, and full descriptions.
+- **Flexible Search Options**: Supports keyword-based searches, location filters, and custom start URLs for targeted scraping.
+- **Pagination Handling**: Automatically navigates through multiple pages of search results to collect the desired number of jobs.
+- **Detail Page Scraping**: Optionally fetches full job descriptions from individual job pages for richer data.
+- **Deduplication**: Ensures no duplicate job listings in the output dataset.
+- **Proxy Support**: Integrates with Apify Proxy for reliable and stealthy scraping.
+- **SEO-Optimized Output**: Structured data suitable for further processing, analysis, or integration with job boards.
 
 ## Input
 
-The actor accepts the following input fields (all optional unless noted):
+Configure the actor with the following input parameters to customize your job scraping:
 
-- `keyword` (string) — Job title or skill to search for (in Norwegian). If omitted, fetches general listings.
-- `location` (string) — Location filter (e.g., "Oslo").
-- `category` (string) — Job category (not directly supported, kept for consistency).
-- `startUrl` / `url` / `startUrls` — Specific Finn.no search URL(s) to start from (e.g., `https://www.finn.no/job/search?q=utvikler`). Overrides keyword/location.
-- `results_wanted` (integer) — Maximum number of job listings to collect. Default: 100.
-- `max_pages` (integer) — Safety cap on number of listing pages to visit. Default: 20.
-- `collectDetails` (boolean) — If true, the actor will visit each job detail page to extract full description. Default: true.
-- `cookies` / `cookiesJson` — Optional cookies to include in requests (helps bypass consent banner).
-- `dedupe` (boolean) — In-memory deduplication of URLs. Default: true.
-- `proxyConfiguration` — Proxy settings (use Apify Proxy for best results).
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `keyword` | string | Job search keyword (e.g., "utvikler", "ingeniør"). Use Norwegian terms for best results. | - |
+| `location` | string | Location filter (e.g., "Oslo", "Bergen"). | - |
+| `startUrl` / `url` / `startUrls` | string/array | Custom Finn.no job search URL(s) to start from. Overrides keyword/location if provided. | - |
+| `results_wanted` | integer | Maximum number of jobs to collect. | 100 |
+| `max_pages` | integer | Maximum number of search pages to visit. | 20 |
+| `collectDetails` | boolean | Whether to scrape full descriptions from job detail pages. | true |
+| `dedupe` | boolean | Enable in-memory deduplication of job URLs. | true |
+| `proxyConfiguration` | object | Proxy settings for scraping (recommended: Apify Proxy). | - |
+| `cookies` / `cookiesJson` | string | Custom cookies to bypass consent banners. | - |
+
+All parameters are optional. Provide at least `keyword` or `location` for general searches, or use `startUrls` for specific queries.
 
 ## Output
 
-Each item saved to the dataset follows this structure:
+The actor outputs a dataset of job listings in JSON format. Each item includes:
 
-```
+```json
 {
-	"title": "...",
-	"company": "...",
-	"category": "...",
-	"location": "...",
-	"date_posted": "...",
-	"description_html": "<p>...</p>",
-	"description_text": "Plain text version of description",
-	"url": "..."
+  "title": "Job Title",
+  "company": "Company Name",
+  "category": "Job Category",
+  "location": "Location",
+  "date_posted": "Posting Date",
+  "description_html": "<p>Full HTML description</p>",
+  "description_text": "Plain text description",
+  "url": "https://www.finn.no/job/ad/..."
 }
 ```
 
-## Notes
+- **title**: Job position title.
+- **company**: Hiring company name.
+- **category**: Job category (if available).
+- **location**: Job location or "Remote".
+- **date_posted**: Date the job was posted.
+- **description_html**: Full job description in HTML.
+- **description_text**: Plain text version of the description.
+- **url**: Direct link to the job listing on Finn.no.
 
-- The actor uses CheerioCrawler with gotScraping; no additional local packages are required beyond those in package.json.
-- On Apify platform, provide `proxyConfiguration` and reasonable `results_wanted` to avoid rate limits.
-- If Finn.no changes their markup or JSON structure, selectors in `src/main.js` may need small updates.
+## Usage
+
+1. **On Apify Platform**:
+   - Search for "Finn.no Job Scraper" in the Apify Store.
+   - Click "Run" and configure inputs as needed.
+   - Monitor the run and download results from the dataset.
+
+2. **Via API**:
+   - Use the Apify API to run the actor programmatically.
+   - Example API call:
+     ```bash
+     curl -X POST "https://api.apify.com/v2/acts/finn-no-jobs-scraper/runs" \
+     -H "Authorization: Bearer YOUR_API_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"keyword": "utvikler", "location": "Oslo", "results_wanted": 50}'
+     ```
+
+3. **Local Development**:
+   - Clone the actor and run locally with Node.js.
+   - Set input via `INPUT.json` and execute `npm start`.
+
+## Configuration
+
+- **Proxy Settings**: For production use, enable Apify Proxy with residential IPs to avoid blocks.
+- **Rate Limiting**: Adjust `max_pages` and `results_wanted` to control scraping speed and volume.
+- **Cookies**: If Finn.no requires consent, provide cookies to simulate user acceptance.
+- **Deduplication**: Keep `dedupe` enabled to prevent duplicate entries.
+
+## Examples
+
+### Example 1: Scrape Developer Jobs in Oslo
+```json
+{
+  "keyword": "utvikler",
+  "location": "Oslo",
+  "results_wanted": 100,
+  "collectDetails": true
+}
+```
+
+### Example 2: Custom Search URL
+```json
+{
+  "startUrls": ["https://www.finn.no/job/search?q=ingeniør&location=Trondheim"],
+  "results_wanted": 50
+}
+```
+
+### Example 3: Quick List-Only Scrape
+```json
+{
+  "keyword": "analytiker",
+  "collectDetails": false,
+  "results_wanted": 20
+}
+```
+
+## Limitations
+
+- Scraping is subject to Finn.no's terms of service; use responsibly.
+- Some jobs may require user interaction or have dynamic content not captured.
+- High-volume scraping may trigger rate limits; use proxies and reasonable limits.
+- Output is based on available data; missing fields are set to `null`.
+
+## Support
+
+For issues, feature requests, or questions:
+- Check the [Apify Community Forum](https://community.apify.com/).
+- Report bugs via the actor's GitHub repository.
+- Contact support at support@apify.com.
+
+---
+
+*This actor is designed for ethical web scraping. Ensure compliance with local laws and website policies.*
